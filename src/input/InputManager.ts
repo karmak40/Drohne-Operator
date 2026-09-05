@@ -53,6 +53,8 @@ export class InputManager {
   private lastLookY = 0;
   private keys = new Set<string>();
   private pointerLocked = false;
+  /** Захват курсора запрещён браузером — работает запасная схема с ПКМ. */
+  private lockUnavailable = false;
   private mouseDragLook = false;
   private disposers: (() => void)[] = [];
 
@@ -284,6 +286,7 @@ export class InputManager {
     window.addEventListener('mouseup', onUp);
     window.addEventListener('mousemove', onMove);
     document.addEventListener('pointerlockchange', onLockChange);
+    document.addEventListener('pointerlockerror', onLockError);
     this.surface.addEventListener('contextmenu', onContext);
     this.surface.addEventListener('wheel', onWheel, { passive: false });
 
@@ -292,13 +295,45 @@ export class InputManager {
       window.removeEventListener('mouseup', onUp);
       window.removeEventListener('mousemove', onMove);
       document.removeEventListener('pointerlockchange', onLockChange);
+      document.removeEventListener('pointerlockerror', onLockError);
       this.surface.removeEventListener('contextmenu', onContext);
       this.surface.removeEventListener('wheel', onWheel);
     });
   }
 
+  /** Запрос захвата курсора; отказ переводит управление на запасную схему. */
+  private requestLock(): void {
+    const request = this.canvas.requestPointerLock as
+      | ((options?: { unadjustedMovement?: boolean }) => Promise<void> | void)
+      | undefined;
+    if (!request) {
+      this.lockUnavailable = true;
+      return;
+    }
+    try {
+      const result = request.call(this.canvas);
+      // В свежих браузерах метод возвращает промис; в старых — undefined,
+      // и об отказе там сообщает только событие pointerlockerror.
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch(() => {
+          this.lockUnavailable = true;
+        });
+      }
+    } catch {
+      this.lockUnavailable = true;
+    }
+  }
+
   releasePointerLock(): void {
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+  }
+
+  /**
+   * Мышь ещё не крутит камеру: курсор не захвачен, но захват доступен.
+   * Если браузер захват запретил, подсказка не нужна — работает ПКМ.
+   */
+  get needsCursorCapture(): boolean {
+    return !this.pointerLocked && !this.lockUnavailable;
   }
 
   /* ---------------------------------------------------------------- */

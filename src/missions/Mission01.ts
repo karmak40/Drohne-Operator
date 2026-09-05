@@ -77,7 +77,12 @@ const approach: PhaseDef = {
     ctx.say('speaker.elena', 'radio.airborne', { delay: 0.5 });
   },
 
-  tutorial: () => (isTouch() ? 'tut.move' : 'tut.moveKb'),
+  // Первый раз осмотреться игроку нужно именно здесь, поэтому пока курсор
+  // не захвачен, подсказка говорит про клик, а не про «мышь — обзор».
+  tutorial: (ctx) => {
+    if (isTouch()) return 'tut.move';
+    return ctx.input.needsCursorCapture ? 'tut.lookKb' : 'tut.moveKb';
+  },
 
   done: (ctx) => {
     const p = ctx.flight.position;
@@ -310,6 +315,7 @@ export const MISSION_01_HINTS: StringKey[] = [
   'tut.takeoffKb',
   'tut.move',
   'tut.moveKb',
+  'tut.lookKb',
   'tut.foam',
   'tut.foamKb',
   'tut.thermal',
