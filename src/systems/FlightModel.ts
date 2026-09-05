@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { cfg } from '@/core/Config';
 import { clamp, clamp01, damp, dampAngle } from '@/core/MathUtil';
 import { bus } from '@/core/EventBus';
+import { baseStats, type DroneStats } from '@/core/Upgrades';
 import type { Collider } from '@/world/LevelTypes';
 
 export interface FlightInput {
@@ -57,6 +58,9 @@ export class FlightModel {
   /** Дрон упёрся в границу зоны в этом кадре — HUD показывает предупреждение. */
   boundaryBlocked = false;
 
+  /** Характеристики борта из ангара; заменяются перед вылетом. */
+  stats: DroneStats = baseStats();
+
   private readonly wind = new THREE.Vector3();
   private readonly updraft = new THREE.Vector3();
   private readonly tmp = new THREE.Vector3();
@@ -89,17 +93,24 @@ export class FlightModel {
     this.updraft.set(x, y, z);
   }
 
-  /** Множитель максимальной скорости от массы груза. */
+  /**
+   * Множители от массы груза. Прокачанная грузоподъёмность смягчает все три
+   * штрафа одним коэффициентом — так ветка ощущается цельно, а не как набор
+   * отдельных мелких прибавок.
+   */
   private speedFactor(payload: number): number {
-    return clamp(1 - payload * cfg.mass.speedPenaltyPerKg, 0.32, 1);
+    const k = cfg.mass.speedPenaltyPerKg * this.stats.massPenaltyMul;
+    return clamp(1 - payload * k, 0.32, 1);
   }
 
   private responseFactor(payload: number): number {
-    return clamp(1 - payload * cfg.mass.responsePenaltyPerKg, 0.3, 1);
+    const k = cfg.mass.responsePenaltyPerKg * this.stats.massPenaltyMul;
+    return clamp(1 - payload * k, 0.3, 1);
   }
 
   private climbFactor(payload: number): number {
-    return clamp(1 - payload * cfg.mass.climbPenaltyPerKg, 0.18, 1);
+    const k = cfg.mass.climbPenaltyPerKg * this.stats.massPenaltyMul;
+    return clamp(1 - payload * k, 0.18, 1);
   }
 
   update(dt: number, input: FlightInput, payload: number, colliders: Collider[], bounds: THREE.Box3): void {
@@ -113,7 +124,7 @@ export class FlightModel {
     const climbMul = this.climbFactor(payload);
 
     const stickLen = Math.min(1, Math.hypot(input.moveX, input.moveY));
-    const overweight = cfg.mass.empty + payload > cfg.mass.maxTakeoff;
+    const overweight = cfg.mass.empty + payload > this.stats.maxTakeoff;
     this.pilotIdle = stickLen < 0.15 && input.climb < 0.05;
 
     /* --- Взлёт / стоянка ------------------------------------------ */
@@ -396,7 +407,11 @@ export class FlightModel {
     // Провода тонкие и плохо читаются в дыму, поэтому цена касания чуть ниже
     // лобового удара о бетон: раньше одна зацепка на крейсерской съедала весь корпус.
     const multiplier = kind === 'soft' ? 0 : kind === 'wire' ? 1.15 : 1;
-    const damage = (speed - cfg.hull.safeImpactSpeed) * cfg.hull.impactDamagePerSpeed * multiplier;
+    const damage =
+      (speed - cfg.hull.safeImpactSpeed) *
+      cfg.hull.impactDamagePerSpeed *
+      multiplier *
+      this.stats.impactDamageMul;
 
     this.impactCooldown = 0.35;
     bus.emit('drone:impact', { speed, damage, kind });

@@ -249,8 +249,10 @@ const evacuate: PhaseDef = {
   enter(ctx) {
     ctx.rescue.setZoneVisible(false);
 
-    // Сценарный момент: заряда остаётся ровно на дорогу назад.
-    ctx.drone.state.battery = Math.min(ctx.drone.state.battery, ctx.drone.state.batteryMax * 0.28);
+    // Сценарный момент: заряда остаётся ровно на дорогу назад. Доля привязана
+    // к скорости с грузом — после замедления дрона обратный путь занимает
+    // около 13 секунд, это примерно пятая часть ёмкости.
+    ctx.drone.state.battery = Math.min(ctx.drone.state.battery, ctx.drone.state.batteryMax * 0.4);
 
     ctx.say('speaker.elena', 'radio.pickedUp');
     ctx.say('speaker.worker', 'radio.workerThanks', { delay: 0.3 });
@@ -279,7 +281,7 @@ const evacuate: PhaseDef = {
       target.root.visible = false;
       ctx.drone.state.payload += target.spec.mass;
     }
-    ctx.drone.state.battery = Math.min(ctx.drone.state.battery, ctx.drone.state.batteryMax * 0.35);
+    ctx.drone.state.battery = Math.min(ctx.drone.state.battery, ctx.drone.state.batteryMax * 0.48);
     ctx.rescue.setZoneVisible(false);
   },
 };
@@ -290,6 +292,9 @@ export const MISSION_01: MissionDef = {
   id: 'mission01',
   phases: [takeoff, approach, extinguish, courtyard, rescue, evacuate],
   objectiveFireGroups: ['gate'],
+  // Спокойное прохождение по маршруту занимает около 40 с; норматив даёт
+  // запас на осмотр, но награждает тех, кто не блуждает.
+  parTime: 55,
 
   checkpointFor(phaseIndex, level) {
     switch (phaseIndex) {

@@ -4,7 +4,18 @@ import { bus } from '@/core/EventBus';
 import { clamp01, noise1, randRange } from '@/core/MathUtil';
 import { ParticleSystem } from './Particles';
 import { emberSprite, flameSprite, smokeSprite } from '@/world/Textures';
+import { LAYER } from '@/render/Renderer';
 import type { FireSpec } from '@/world/LevelTypes';
+
+/** Индикатор остатка очага над пламенем. */
+interface HealthBar {
+  root: THREE.Group;
+  fill: THREE.Mesh;
+  fillMat: THREE.MeshBasicMaterial;
+  frameMat: THREE.MeshBasicMaterial;
+  /** Текущая непрозрачность; доводится плавно, чтобы полоска не моргала */
+  alpha: number;
+}
 
 interface Fire {
   spec: FireSpec;
@@ -30,6 +41,8 @@ export class FireSystem {
 
   private fires: Fire[] = [];
   private byId = new Map<string, Fire>();
+  private bars: HealthBar[] = [];
+  private barGroup = new THREE.Group();
   private flames: ParticleSystem;
   private smoke: ParticleSystem;
   private embers: ParticleSystem;
@@ -49,7 +62,7 @@ export class FireSystem {
     this.smoke = new ParticleSystem(smokeSprite(), Math.round(1100 * scale), { fog: true, sortOrder: 8 });
     this.embers = new ParticleSystem(emberSprite(), Math.round(320 * scale), { additive: true, sortOrder: 13 });
 
-    this.group.add(this.smoke.points, this.flames.points, this.embers.points);
+    this.group.add(this.smoke.points, this.flames.points, this.embers.points, this.barGroup);
     this.emissionScale = scale;
   }
 
@@ -87,7 +100,58 @@ export class FireSystem {
 
       this.fires.push(fire);
       this.byId.set(spec.id, fire);
+      this.bars.push(this.createBar(spec));
     }
+  }
+
+  /**
+   * Полоска остатка очага: рамка и заполнение.
+   *
+   * Без неё тушение слепое — игрок видит струю и частицы, но не понимает,
+   * попадает ли он и сколько ещё лить. Показывается только во время работы
+   * пеной и гаснет через пару секунд, чтобы не превращать двор в интерфейс.
+   */
+  private createBar(spec: FireSpec): HealthBar {
+    const root = new THREE.Group();
+    const width = 1.5 + spec.scale * 0.35;
+    const height = 0.17;
+
+    const frameMat = new THREE.MeshBasicMaterial({
+      color: 0x0b0e12,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+    });
+    const frame = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.08, height + 0.08), frameMat);
+    frame.renderOrder = 24;
+    root.add(frame);
+
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: 0xff7a2a,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+    });
+    // Начало координат уводим к левому краю: тогда шкала убывает scale.x,
+    // а не расползается в обе стороны от центра.
+    const fillGeo = new THREE.PlaneGeometry(width, height);
+    fillGeo.translate(width / 2, 0, 0);
+    const fill = new THREE.Mesh(fillGeo, fillMat);
+    fill.position.x = -width / 2;
+    fill.position.z = 0.001;
+    fill.renderOrder = 25;
+    root.add(fill);
+
+    root.position.copy(spec.position);
+    root.position.y += 1.6 + spec.scale * 1.25;
+    // Атмосферный слой: в тепловом проходе интерфейсу делать нечего.
+    root.traverse((o) => o.layers.set(LAYER.ATMOSPHERE));
+    root.visible = false;
+    this.barGroup.add(root);
+
+    return { root, fill, fillMat, frameMat, alpha: 0 };
   }
 
   /** Зажигает группу очагов — используется скриптом миссии. */
@@ -236,9 +300,10 @@ export class FireSystem {
     return clamp01(density);
   }
 
-  update(dt: number, windX: number, windZ: number): void {
+  update(dt: number, windX: number, windZ: number, camera?: THREE.Camera): void {
     this.time += dt;
     const emissionScale = this.emissionScale;
+    if (camera) this.updateBars(dt, camera);
 
     for (const fire of this.fires) {
       if (!fire.active) {
@@ -388,6 +453,39 @@ export class FireSystem {
     }
   }
 
+  /**
+   * Разворачивает полоски к камере и ведёт их прозрачность.
+   *
+   * Показываем только пока очаг под струёй и ещё пару секунд после — так
+   * индикатор отвечает на вопрос «попадаю ли я», не превращаясь в постоянную
+   * разметку поверх всего двора.
+   */
+  private updateBars(dt: number, camera: THREE.Camera): void {
+    for (let i = 0; i < this.bars.length; i++) {
+      const bar = this.bars[i];
+      const fire = this.fires[i];
+      if (!fire) continue;
+
+      const full = cfg.fire.health * fire.spec.scale;
+      const ratio = clamp01(fire.health / full);
+      // Целимся показать полоску, пока пена работает по очагу и 1.5 с после.
+      const wanted = fire.active && fire.sinceFoam < 1.5 ? 1 : 0;
+      bar.alpha += (wanted - bar.alpha) * Math.min(1, dt * (wanted > bar.alpha ? 14 : 4));
+
+      if (bar.alpha < 0.01) {
+        bar.root.visible = false;
+        continue;
+      }
+      bar.root.visible = true;
+      bar.root.quaternion.copy(camera.quaternion);
+      bar.fill.scale.x = Math.max(0.0001, ratio);
+      bar.fillMat.opacity = bar.alpha;
+      bar.frameMat.opacity = bar.alpha * 0.72;
+      // К концу тушения шкала уходит из оранжевого в белый — видно, что добиваешь.
+      bar.fillMat.color.setRGB(1, 0.48 + (1 - ratio) * 0.45, 0.16 + (1 - ratio) * 0.7);
+    }
+  }
+
   reset(): void {
     this.flames.clear();
     this.smoke.clear();
@@ -398,12 +496,23 @@ export class FireSystem {
       fire.sinceFoam = 99;
       if (fire.light) fire.light.intensity = 0;
     }
+    for (const bar of this.bars) {
+      bar.alpha = 0;
+      bar.root.visible = false;
+    }
   }
 
   dispose(full = true): void {
     for (const fire of this.fires) {
       if (fire.light) this.group.remove(fire.light);
     }
+    for (const bar of this.bars) {
+      bar.root.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+      bar.fillMat.dispose();
+      bar.frameMat.dispose();
+      this.barGroup.remove(bar.root);
+    }
+    this.bars = [];
     if (full) {
       this.flames.dispose();
       this.smoke.dispose();

@@ -1,3 +1,5 @@
+import type { Grade } from './Grade';
+
 /**
  * Минимальная типизированная шина событий.
  * Системы общаются только через неё, чтобы не тянуть ссылки друг на друга.
@@ -76,6 +78,9 @@ export interface MissionResultData {
   batteryLeft: number;
   reward: number;
   reputation: number;
+  /** Итоговая оценка вылета и её разбор */
+  grade: Grade;
+  score: number;
 }
 
 type Handler<T> = (payload: T) => void;

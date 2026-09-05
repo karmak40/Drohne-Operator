@@ -55,4 +55,6 @@ export interface MissionDef {
   checkpointFor: (phaseIndex: number, level: LevelData) => { position: THREE.Vector3; yaw: number };
   /** Сколько очагов считается целью миссии */
   objectiveFireGroups: string[];
+  /** Норматив времени, с. Уложился — полный балл, вдвое дольше — ноль. */
+  parTime: number;
 }

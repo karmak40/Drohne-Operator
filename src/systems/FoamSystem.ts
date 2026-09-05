@@ -36,6 +36,9 @@ export class FoamSystem {
   private hasImpact = false;
   private impactDistance = 0;
 
+  /** Напор струи от прокачки модуля пожаротушения; 1 — базовая комплектация. */
+  dpsMultiplier = 1;
+
   private guideVisible = false;
   private firing = false;
   private spawnAccum = 0;
@@ -157,7 +160,7 @@ export class FoamSystem {
       this.emitStream(dt, origin, dir);
 
       if (this.hasImpact) {
-        const dealt = fires.damageArea(this.impact, f.splashRadius, f.dps, dt);
+        const dealt = fires.damageArea(this.impact, f.splashRadius, f.dps * this.dpsMultiplier, dt);
         this.emitSplash(dt, dealt > 0);
       }
     }

@@ -1,14 +1,20 @@
 import { control, el, mount, onTap } from './dom';
 import { applyTranslations, getLocale, LOCALE_NAMES, setLocale, t, type LocaleCode } from '@/i18n';
 import { save } from '@/core/Save';
+import { haptics } from '@/core/Haptics';
 import { audio } from '@/audio/AudioEngine';
 import { formatTime } from '@/core/MathUtil';
 import { cfg } from '@/core/Config';
+import { computeStats, effectOf, MAX_LEVEL, nextCost, UPGRADE_BRANCHES } from '@/core/Upgrades';
 import type { MissionResultData } from '@/core/EventBus';
+
+/** Пока миссия одна — идентификатор для чтения рекордов из профиля. */
+const MISSION_ID = 'mission01';
 
 export interface ScreenCallbacks {
   onStartMission: () => void;
   onOpenBriefing: () => void;
+  onOpenHangar: () => void;
   onBackToMenu: () => void;
   onResume: () => void;
   onRestart: () => void;
@@ -22,7 +28,13 @@ export interface ScreenCallbacks {
  */
 export class Screens {
   private menu: HTMLElement;
+  private hangar: HTMLElement;
+  private hangarGrid: HTMLElement;
+  private hangarBalance: HTMLElement;
   private briefing: HTMLElement;
+  private briefBattery: HTMLElement;
+  private briefFoam: HTMLElement;
+  private briefWinch: HTMLElement;
   private pause: HTMLElement;
   private result: HTMLElement;
 
@@ -31,11 +43,14 @@ export class Screens {
   private langButtons: HTMLButtonElement[] = [];
 
   private resultTitle: HTMLElement;
+  private resultGrade: HTMLElement;
+  private resultScore: HTMLElement;
   private resultStats: HTMLElement;
   private resultReward: HTMLElement;
   private resultAmount: HTMLElement;
   private resultNote: HTMLElement;
   private resultUnlock: HTMLElement;
+  private hapticsBtn?: HTMLButtonElement;
   private doubleBtn: HTMLButtonElement;
   private continueBtn: HTMLButtonElement;
   private retryBtn: HTMLButtonElement;
@@ -68,6 +83,13 @@ export class Screens {
       this.cb.onOpenBriefing();
     });
 
+    const hangarBtn = control(mount(menuActions, el('button', 'btn btn--ghost'))) as HTMLButtonElement;
+    hangarBtn.dataset.i18n = 'menu.hangar';
+    onTap(hangarBtn, () => {
+      void audio.start().then(() => audio.click());
+      this.cb.onOpenHangar();
+    });
+
     const resetBtn = control(mount(menuActions, el('button', 'btn btn--ghost'))) as HTMLButtonElement;
     resetBtn.dataset.i18n = 'menu.reset';
     onTap(resetBtn, () => {
@@ -83,6 +105,42 @@ export class Screens {
     const credits = mount(menuPanel, el('div', 'eyebrow'));
     credits.style.marginTop = '22px';
     credits.dataset.i18n = 'menu.credits';
+
+    /* ---------------------------------------------------------------- */
+    /* Ангар                                                             */
+    /* ---------------------------------------------------------------- */
+    this.hangar = mount(parent, el('div', 'screen'));
+    this.hangar.hidden = true;
+    const hgPanel = mount(this.hangar, el('div', 'panel panel--wide'));
+
+    const hgHead = mount(hgPanel, el('div', 'row'));
+    const hgTitles = mount(hgHead, el('div'));
+    const hgTitle = mount(hgTitles, el('h2', 'title'));
+    hgTitle.style.fontSize = 'clamp(20px, 3.4vw, 30px)';
+    hgTitle.dataset.i18n = 'hangar.title';
+    const hgSub = mount(hgTitles, el('div', 'eyebrow'));
+    hgSub.dataset.i18n = 'hangar.subtitle';
+    mount(hgHead, el('div', 'spacer'));
+    this.hangarBalance = mount(hgHead, el('div', 'hangar-balance'));
+
+    mount(hgPanel, el('div', 'rule'));
+
+    this.hangarGrid = mount(hgPanel, el('div', 'hangar-grid'));
+
+    const hgActions = mount(hgPanel, el('div', 'row row--end'));
+    hgActions.style.marginTop = '18px';
+    const hgBack = control(mount(hgActions, el('button', 'btn btn--ghost'))) as HTMLButtonElement;
+    hgBack.dataset.i18n = 'hangar.back';
+    onTap(hgBack, () => {
+      audio.click();
+      this.cb.onBackToMenu();
+    });
+    const hgLaunch = control(mount(hgActions, el('button', 'btn btn--primary'))) as HTMLButtonElement;
+    hgLaunch.dataset.i18n = 'menu.play';
+    onTap(hgLaunch, () => {
+      void audio.start().then(() => audio.click());
+      this.cb.onOpenBriefing();
+    });
 
     /* ---------------------------------------------------------------- */
     /* Брифинг                                                           */
@@ -105,16 +163,18 @@ export class Screens {
     const brDrone = mount(brPanel, el('div', 'eyebrow'));
     brDrone.dataset.i18n = 'brief.drone';
 
+    // Карточки снаряжения заполняются в refreshBriefing(): после ангара
+    // цифры обязаны показывать реальный борт, а не базовую комплектацию.
     const loadout = mount(brPanel, el('div', 'loadout'));
-    const card = (key: string, value: string): void => {
+    const card = (key: string): HTMLElement => {
       const box = mount(loadout, el('div', 'loadout-card'));
       const name = mount(box, el('div', 'name'));
       name.dataset.i18n = key;
-      mount(box, el('div', 'value', value));
+      return mount(box, el('div', 'value'));
     };
-    card('brief.battery', `${Math.round(cfg.battery.capacity)} Wh`);
-    card('brief.foam', `${Math.round(cfg.foam.tank)} L`);
-    card('brief.winch', `${Math.round(cfg.mass.maxTakeoff - cfg.mass.empty)} kg`);
+    this.briefBattery = card('brief.battery');
+    this.briefFoam = card('brief.foam');
+    this.briefWinch = card('brief.winch');
 
     const brActions = mount(brPanel, el('div', 'row row--end'));
     brActions.style.marginTop = '22px';
@@ -157,6 +217,19 @@ export class Screens {
     };
     mkPauseBtn('pause.resume', 'btn--primary', () => this.cb.onResume());
     mkPauseBtn('pause.restart', '', () => this.cb.onRestart());
+
+    // Тумблер вибрации показываем только там, где вибромотор вообще есть.
+    if (haptics.available) {
+      this.hapticsBtn = control(mount(pauseActions, el('button', 'btn btn--ghost'))) as HTMLButtonElement;
+      onTap(this.hapticsBtn, () => {
+        haptics.setEnabled(!haptics.isEnabled);
+        audio.click();
+        if (haptics.isEnabled) haptics.landing();
+        this.refreshHaptics();
+      });
+      this.refreshHaptics();
+    }
+
     mkPauseBtn('pause.debug', 'btn--ghost', () => this.cb.onToggleDebug());
     mkPauseBtn('pause.quit', 'btn--ghost', () => this.cb.onBackToMenu());
 
@@ -167,8 +240,15 @@ export class Screens {
     this.result.hidden = true;
     const resPanel = mount(this.result, el('div', 'panel'));
 
-    this.resultTitle = mount(resPanel, el('h2', 'title'));
+    // Заголовок и ранг стоят в одной строке: буква — первое, что видит игрок.
+    const resHead = mount(resPanel, el('div', 'row'));
+    const resTitles = mount(resHead, el('div'));
+    this.resultTitle = mount(resTitles, el('h2', 'title'));
     this.resultTitle.style.fontSize = 'clamp(22px, 4vw, 34px)';
+    this.resultScore = mount(resTitles, el('div', 'eyebrow'));
+    mount(resHead, el('div', 'spacer'));
+    this.resultGrade = mount(resHead, el('div', 'grade'));
+
     this.resultStats = mount(resPanel, el('div', 'stats'));
 
     this.resultReward = mount(resPanel, el('div', 'reward'));
@@ -233,22 +313,104 @@ export class Screens {
     return box;
   }
 
+  private refreshHaptics(): void {
+    if (!this.hapticsBtn) return;
+    this.hapticsBtn.textContent = `${t('pause.haptics')}: ${t(haptics.isEnabled ? 'common.on' : 'common.off')}`;
+  }
+
   refreshMenu(): void {
     const data = save.get();
     this.menuBalance.textContent = t('menu.balance', { money: data.money });
     this.menuReputation.textContent = t('menu.reputation', { rep: data.reputation });
   }
 
+  /** Снаряжение в брифинге — с учётом установленных в ангаре модулей. */
+  refreshBriefing(): void {
+    const stats = computeStats(save.get().upgrades);
+    this.briefBattery.textContent = `${Math.round(stats.batteryCapacity)} Wh`;
+    this.briefFoam.textContent = `${Math.round(stats.foamTank)} L`;
+    this.briefWinch.textContent = `${Math.round(stats.maxTakeoff - cfg.mass.empty)} kg`;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Ангар                                                               */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Перерисовывает карточки целиком. Веток четыре, перерисовка идёт только
+   * по открытию экрана и после покупки, поэтому точечное обновление узлов
+   * тут не окупается.
+   */
+  refreshHangar(): void {
+    const data = save.get();
+    this.hangarBalance.textContent = t('menu.balance', { money: data.money });
+    this.hangarGrid.innerHTML = '';
+
+    for (const branch of UPGRADE_BRANCHES) {
+      const level = data.upgrades[branch.id];
+      const cost = nextCost(branch.id, level);
+      const maxed = cost === null;
+      const affordable = !maxed && cost <= data.money;
+
+      const card = mount(this.hangarGrid, el('div', 'upgrade-card'));
+      if (maxed) card.classList.add('is-maxed');
+
+      const head = mount(card, el('div', 'upgrade-card__head'));
+      mount(head, el('div', 'upgrade-card__glyph', branch.glyph));
+      const titles = mount(head, el('div'));
+      mount(titles, el('div', 'upgrade-card__name', t(branch.nameKey)));
+      mount(titles, el('div', 'upgrade-card__desc', t(branch.descKey)));
+
+      // Полоска уровней: заполненные сегменты — уже установленные модули.
+      const pips = mount(card, el('div', 'upgrade-card__pips'));
+      for (let i = 0; i < MAX_LEVEL; i++) {
+        const pip = mount(pips, el('i'));
+        if (i < level) pip.classList.add('is-on');
+      }
+
+      const status = mount(card, el('div', 'upgrade-card__status'));
+      status.textContent = level === 0 ? t('hangar.stock') : t('hangar.level', { level, max: MAX_LEVEL });
+
+      // На базовой комплектации показываем только то, что даст первый модуль:
+      // «+0% · −0% → +22% · −12%» читается как мусор.
+      const gain = mount(card, el('div', 'upgrade-card__gain'));
+      if (maxed) gain.textContent = effectOf(branch.id, level);
+      else if (level === 0) gain.textContent = effectOf(branch.id, 1);
+      else gain.textContent = `${effectOf(branch.id, level)}  →  ${effectOf(branch.id, level + 1)}`;
+
+      const buy = control(mount(card, el('button', 'btn btn--primary upgrade-card__buy'))) as HTMLButtonElement;
+      if (maxed) {
+        buy.textContent = t('hangar.maxed');
+        buy.disabled = true;
+      } else {
+        buy.textContent = `${t('hangar.buy')} · ${cost} $`;
+        buy.disabled = !affordable;
+        onTap(buy, () => {
+          if (!save.buyUpgrade(branch.id, cost)) {
+            audio.chime(false);
+            return;
+          }
+          audio.chime(true);
+          this.refreshHangar();
+          this.refreshMenu();
+        });
+      }
+    }
+  }
+
   /* ------------------------------------------------------------------ */
   /* Переключение                                                        */
   /* ------------------------------------------------------------------ */
 
-  show(name: 'menu' | 'briefing' | 'pause' | 'result' | 'none'): void {
+  show(name: 'menu' | 'hangar' | 'briefing' | 'pause' | 'result' | 'none'): void {
     this.menu.hidden = name !== 'menu';
+    this.hangar.hidden = name !== 'hangar';
     this.briefing.hidden = name !== 'briefing';
     this.pause.hidden = name !== 'pause';
     this.result.hidden = name !== 'result';
     if (name === 'menu') this.refreshMenu();
+    if (name === 'hangar') this.refreshHangar();
+    if (name === 'briefing') this.refreshBriefing();
   }
 
   /* ------------------------------------------------------------------ */
@@ -258,6 +420,17 @@ export class Screens {
   showResult(data: MissionResultData, success: boolean, failReason?: string): void {
     this.resultTitle.textContent = t(success ? 'result.success' : 'result.failed');
     this.resultTitle.style.color = success ? 'var(--good)' : 'var(--bad)';
+
+    // Ранг показываем только за успешный вылет: за провал буквы не ставят.
+    this.resultGrade.textContent = success ? data.grade : '';
+    this.resultGrade.dataset.grade = success ? data.grade : '';
+    this.resultGrade.style.display = success ? '' : 'none';
+    this.resultScore.textContent = success ? t('result.score', { score: data.score }) : '';
+
+    const best = save.get().missions[MISSION_ID]?.bestGrade;
+    if (success && best && best !== data.grade) {
+      this.resultScore.textContent += ` · ${t('result.best', { grade: best })}`;
+    }
 
     const rows: [string, string][] = [
       [t('result.rescued'), `${data.survivorsRescued} / ${data.survivorsTotal}`],

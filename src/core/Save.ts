@@ -1,3 +1,5 @@
+import { bestGrade, type Grade } from './Grade';
+
 /**
  * Прогресс игрока в localStorage. Схема версионируется — при несовпадении
  * версии профиль сбрасывается, а не ломает игру.
@@ -19,6 +21,8 @@ export interface MissionRecord {
   bestTime: number;
   bestDamage: number;
   survivorsRescued: number;
+  /** Лучший ранг за все прохождения */
+  bestGrade?: Grade;
 }
 
 export interface SaveData {
@@ -92,6 +96,19 @@ class SaveManager {
     this.flush();
   }
 
+  /**
+   * Списывает деньги и поднимает ветку на уровень. Возвращает false, если
+   * не хватило бюджета — проверка живёт здесь, чтобы UI не мог рассинхронно
+   * выдать апгрейд бесплатно.
+   */
+  buyUpgrade(id: keyof DroneUpgrades, cost: number): boolean {
+    if (cost > this.data.money) return false;
+    this.data.money -= cost;
+    this.data.upgrades[id] += 1;
+    this.flush();
+    return true;
+  }
+
   unlock(id: string): void {
     if (!this.data.unlocked.includes(id)) {
       this.data.unlocked.push(id);
@@ -115,6 +132,7 @@ class SaveManager {
       bestTime: Math.min(prev.bestTime, record.bestTime ?? Infinity),
       bestDamage: Math.min(prev.bestDamage, record.bestDamage ?? 100),
       survivorsRescued: Math.max(prev.survivorsRescued, record.survivorsRescued ?? 0),
+      bestGrade: record.bestGrade ? bestGrade(prev.bestGrade, record.bestGrade) : prev.bestGrade,
     };
     this.flush();
   }

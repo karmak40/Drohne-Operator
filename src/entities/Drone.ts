@@ -4,6 +4,7 @@ import { makeBox, makeCylinder } from '@/world/BuildUtils';
 import { bakeHeat, HEAT } from '@/render/HeatMaterial';
 import { cfg } from '@/core/Config';
 import { clamp, clamp01, damp, lerp } from '@/core/MathUtil';
+import { baseStats, type DroneStats } from '@/core/Upgrades';
 import { models } from '@/world/ModelRegistry';
 
 const ARM = 0.78;
@@ -15,6 +16,7 @@ export interface DroneState {
   foam: number;
   foamMax: number;
   hull: number;
+  hullMax: number;
   /** Масса груза на борту, кг */
   payload: number;
 }
@@ -49,14 +51,18 @@ export class Drone {
   private strobePhase = 0;
   private tiltPitch = 0;
   private tiltRoll = 0;
+  /** Характеристики борта с учётом прокачки. */
+  private stats: DroneStats;
 
   constructor(private readonly mat: MaterialLibrary) {
+    this.stats = baseStats();
     this.state = {
-      battery: cfg.battery.capacity,
-      batteryMax: cfg.battery.capacity,
-      foam: cfg.foam.tank,
-      foamMax: cfg.foam.tank,
-      hull: cfg.hull.max,
+      battery: this.stats.batteryCapacity,
+      batteryMax: this.stats.batteryCapacity,
+      foam: this.stats.foamTank,
+      foamMax: this.stats.foamTank,
+      hull: this.stats.hullMax,
+      hullMax: this.stats.hullMax,
       payload: 0,
     };
 
@@ -328,10 +334,20 @@ export class Drone {
     return cfg.mass.empty + this.state.payload;
   }
 
+  /**
+   * Ставит на борт модули из ангара. Вызывается перед вылетом, поэтому
+   * покупка в меню видна уже в следующей миссии.
+   */
+  applyStats(stats: DroneStats): void {
+    this.stats = stats;
+    this.resetState();
+  }
+
   resetState(): void {
-    this.state.battery = this.state.batteryMax = cfg.battery.capacity;
-    this.state.foam = this.state.foamMax = cfg.foam.tank;
-    this.state.hull = cfg.hull.max;
+    const s = this.stats;
+    this.state.battery = this.state.batteryMax = s.batteryCapacity;
+    this.state.foam = this.state.foamMax = s.foamTank;
+    this.state.hull = this.state.hullMax = s.hullMax;
     this.state.payload = 0;
     this.tiltPitch = 0;
     this.tiltRoll = 0;

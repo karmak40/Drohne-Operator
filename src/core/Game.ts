@@ -3,6 +3,9 @@ import * as THREE from 'three';
 import { cfg } from './Config';
 import { bus, type MissionResultData } from './EventBus';
 import { save } from './Save';
+import { computeStats } from './Upgrades';
+import { computeGrade } from './Grade';
+import { haptics } from './Haptics';
 import { clamp, clamp01, damp, noise1 } from './MathUtil';
 import { t } from '@/i18n';
 
@@ -32,7 +35,7 @@ import { MissionRunner } from '@/missions/MissionRunner';
 import { MISSION_01 } from '@/missions/Mission01';
 import type { MissionContext } from '@/missions/MissionTypes';
 
-type Mode = 'menu' | 'briefing' | 'playing' | 'paused' | 'result' | 'failing' | 'finishing';
+type Mode = 'menu' | 'hangar' | 'briefing' | 'playing' | 'paused' | 'result' | 'failing' | 'finishing';
 
 /**
  * Сборка игры: держит все системы, гоняет цикл с фиксированным шагом физики
@@ -51,6 +54,8 @@ export class Game {
   private foam: FoamSystem;
   private rescue: RescueSystem;
   private boundary: Boundary;
+  /** Множитель расхода заряда на груз от прокачки энергосистемы. */
+  private payloadDrainMul = 1;
   /** Чтобы сигнал геозабора не тарахтел каждый кадр. */
   private geofenceBeepTimer = 0;
   private geofenceWasBlocked = false;
@@ -117,6 +122,7 @@ export class Game {
 
     this.screens = new Screens(container, {
       onOpenBriefing: () => this.setMode('briefing'),
+      onOpenHangar: () => this.setMode('hangar'),
       onStartMission: () => this.startMission(),
       onBackToMenu: () => this.setMode('menu'),
       onResume: () => this.resume(),
@@ -168,6 +174,7 @@ export class Game {
         this.drone.state.hull = Math.max(0, this.drone.state.hull - damage);
         this.damageTaken += damage;
         this.hud.flashDamage();
+        haptics.impact(damage);
         this.fires.burstSparks(this.flight.position, 8);
 
         if (kind === 'wire') this.runner.say('speaker.elena', 'radio.wires');
@@ -183,11 +190,15 @@ export class Game {
 
     bus.on('survivor:pickedUp', () => {
       audio.chime(true);
+      haptics.pickup();
       this.hud.toast(t('hud.rescuing'), 'good');
     });
 
     bus.on('fire:groupCleared', ({ group }) => {
-      if (MISSION_01.objectiveFireGroups.includes(group)) audio.chime(true);
+      if (MISSION_01.objectiveFireGroups.includes(group)) {
+        audio.chime(true);
+        haptics.fireOut();
+      }
     });
 
     bus.on('foam:empty', () => this.hud.toast(t('hud.foam') + ' 0%', 'bad', 1.6));
@@ -219,6 +230,10 @@ export class Game {
         this.hud.setVisible(false);
         this.resetToIdle();
         break;
+      case 'hangar':
+        this.screens.show('hangar');
+        this.hud.setVisible(false);
+        break;
       case 'briefing':
         this.screens.show('briefing');
         this.hud.setVisible(false);
@@ -230,6 +245,7 @@ export class Game {
       case 'paused':
         this.screens.show('pause');
         audio.suspend();
+        haptics.stop();
         break;
       case 'result':
         this.screens.show('none');
@@ -260,6 +276,7 @@ export class Game {
   }
 
   private startMission(): void {
+    this.equipFromHangar();
     this.resetToIdle();
     this.damageTaken = 0;
     this.adUsedThisFlight = false;
@@ -273,6 +290,15 @@ export class Game {
 
     void audio.start();
     this.setMode('playing');
+  }
+
+  /** Переносит установленные в ангаре модули на борт и в физику. */
+  private equipFromHangar(): void {
+    const stats = computeStats(save.get().upgrades);
+    this.drone.applyStats(stats);
+    this.flight.stats = stats;
+    this.foam.dpsMultiplier = stats.foamDpsMul;
+    this.payloadDrainMul = stats.payloadDrainMul;
   }
 
   private pause(): void {
@@ -325,6 +351,7 @@ export class Game {
     this.hud.toast(t(reason === 'battery' ? 'fail.battery' : 'fail.destroyed'), 'bad', 3);
     this.hud.showTutorial(t('fail.checkpoint'));
     audio.chime(false);
+    haptics.missionEnd(false);
     bus.emit('mission:failed', { reason });
   }
 
@@ -359,7 +386,7 @@ export class Game {
     const extinguishedGroups = MISSION_01.objectiveFireGroups.filter((g) => !this.fires.isGroupActive(g));
 
     const rescued = this.rescue.deliveredCount;
-    const damagePercent = clamp(100 - (this.drone.state.hull / cfg.hull.max) * 100, 0, 100);
+    const damagePercent = clamp(100 - (this.drone.state.hull / this.drone.state.hullMax) * 100, 0, 100);
 
     let reward =
       rescued * cfg.economy.perSurvivor + extinguishedGroups.length * cfg.economy.perFire * objectiveFires.length;
@@ -368,6 +395,8 @@ export class Game {
 
     const reputation = rescued * cfg.economy.reputationPerSurvivor;
 
+    // Ранг считается по уже собранной статистике, поэтому сначала собираем
+    // результат с заглушками, затем дополняем оценкой.
     const result: MissionResultData = {
       survivorsRescued: rescued,
       survivorsTotal: this.level.survivors.length,
@@ -378,7 +407,12 @@ export class Game {
       batteryLeft: this.drone.state.battery / this.drone.state.batteryMax,
       reward,
       reputation,
+      grade: 'D',
+      score: 0,
     };
+    const graded = computeGrade(result, MISSION_01.parTime);
+    result.grade = graded.grade;
+    result.score = graded.score;
 
     this.lastResult = result;
     this.rewardPaid = reward;
@@ -392,9 +426,11 @@ export class Game {
       bestTime: result.timeSeconds,
       bestDamage: damagePercent,
       survivorsRescued: rescued,
+      bestGrade: result.grade,
     });
 
     bus.emit('mission:complete', result);
+    haptics.missionEnd(true);
     this.hud.setVisible(false);
     this.screens.showResult(result, true);
     this.mode = 'result';
@@ -449,7 +485,7 @@ export class Game {
     this.worldTime += dt;
     this.level.animate(this.worldTime, dt);
     this.updateWind();
-    this.fires.update(dt, this.windVec.x, this.windVec.z);
+    this.fires.update(dt, this.windVec.x, this.windVec.z, this.render.camera);
     this.drone.root.position.copy(this.flight.position);
     this.drone.updateVisuals(dt, this.flight.velocity, this.flight.yaw, this.flight.throttle, !this.flight.landed);
 
@@ -493,10 +529,14 @@ export class Game {
     while (this.accumulator >= step) {
       this.accumulator -= step;
       this.flight.update(step, flightInput, this.drone.state.payload, this.level.colliders, this.level.bounds);
-      if (this.flight.justTookOff) bus.emit('drone:takeoff');
+      if (this.flight.justTookOff) {
+        bus.emit('drone:takeoff');
+        haptics.takeoff();
+      }
       if (this.flight.justLanded) {
         bus.emit('drone:landed', { onHelipad: this.isOnHelipad() });
         audio.impact(0.25);
+        haptics.landing();
       }
     }
 
@@ -507,7 +547,7 @@ export class Game {
     for (const destructible of this.level.destructibles.values()) destructible.update(dt);
 
     /* --- Огонь, пена, спасение ------------------------------------- */
-    this.fires.update(dt, this.windVec.x, this.windVec.z);
+    this.fires.update(dt, this.windVec.x, this.windVec.z, this.render.camera);
 
     this.updateAim();
     this.foam.update(
@@ -589,6 +629,7 @@ export class Game {
       if (this.geofenceBeepTimer <= 0) {
         this.geofenceBeepTimer = 1.1;
         audio.beep(660, 0.1, 0.08, 'sine');
+        haptics.boundary();
       }
     }
     this.geofenceWasBlocked = blocked;
@@ -617,7 +658,8 @@ export class Game {
       s.foam = Math.min(s.foamMax, s.foam + cfg.foam.padRefillRate * dt);
     } else if (!this.flight.landed) {
       const stick = Math.min(1, Math.hypot(this.input.moveX, this.input.moveY) + Math.abs(this.input.climb) * 0.6);
-      const drain = b.idleDrain + b.manoeuvreDrain * stick + b.payloadDrain * s.payload;
+      const drain =
+        b.idleDrain + b.manoeuvreDrain * stick + b.payloadDrain * s.payload * this.payloadDrainMul;
       s.battery = Math.max(0, s.battery - drain * dt);
     }
 
@@ -694,7 +736,7 @@ export class Game {
     this.hud.update(dt, {
       batteryRatio: ratio,
       foamRatio: s.foam / s.foamMax,
-      hullRatio: s.hull / cfg.hull.max,
+      hullRatio: s.hull / s.hullMax,
       payload: s.payload,
       altitude: Math.max(0, this.flight.position.y - cfg.flight.radius),
       speed: horizontalSpeed,
