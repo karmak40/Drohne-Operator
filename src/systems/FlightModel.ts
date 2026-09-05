@@ -139,6 +139,14 @@ export class FlightModel {
     /* --- Горизонталь ---------------------------------------------- */
 
     // Ввод из системы камеры переводится в мир.
+    //
+    // Направление взгляда   forward = ( sin, 0, cos)
+    // Экранное «вправо»     right   = cross(forward, up) = (-cos, 0, sin)
+    //
+    // Раньше вклад moveX брался со знаком «+cos / −sin», то есть ровно
+    // противоположным right: и клавиша D, и отклонение стика вправо уводили
+    // дрон влево. Обе схемы ввода договорились, что moveX > 0 — это вправо,
+    // так что чиним здесь, в одном переводе, а не в раскладке клавиш.
     const sin = Math.sin(input.cameraYaw);
     const cos = Math.cos(input.cameraYaw);
     const maxSpeed = f.maxSpeed * speedMul;
@@ -147,8 +155,8 @@ export class FlightModel {
     let targetVz: number;
 
     if (stickLen > 0.02) {
-      targetVx = (input.moveY * sin + input.moveX * cos) * maxSpeed;
-      targetVz = (input.moveY * cos - input.moveX * sin) * maxSpeed;
+      targetVx = (input.moveY * sin - input.moveX * cos) * maxSpeed;
+      targetVz = (input.moveY * cos + input.moveX * sin) * maxSpeed;
       this.anchorX = this.position.x;
       this.anchorZ = this.position.z;
     } else {

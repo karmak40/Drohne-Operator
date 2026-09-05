@@ -216,26 +216,32 @@ export class InputManager {
   /* ---------------------------------------------------------------- */
 
   private bindMouse(): void {
+    /**
+     * Клик по сцене при отпущенном курсоре сначала забирает курсор и на этом
+     * заканчивается — пену он не льёт. Раньше ЛКМ одновременно захватывала
+     * курсор, крутила камеру перетаскиванием и открывала ствол: осмотреться,
+     * не поливая всё вокруг, было физически невозможно.
+     */
     const onCanvasDown = (e: MouseEvent): void => {
       if (!this.enabled) return;
       if ((e.target as HTMLElement).closest('[data-ui-control]')) return;
 
       if (e.button === 0) {
-        if (!this.pointerLocked && this.canvas.requestPointerLock) {
-          void this.canvas.requestPointerLock();
+        if (!this.pointerLocked && !this.lockUnavailable) {
+          this.requestLock();
+          return;
         }
         this.foamPointer = true;
-        this.mouseDragLook = !this.pointerLocked;
       } else if (e.button === 2) {
-        if (this.allowWinch) this.winchEdge = true;
+        // Запасной обзор для тех, у кого захвата курсора нет или кто вышел
+        // из него по Escape. Пока курсор захвачен, ПКМ не нужна.
+        if (!this.pointerLocked) this.mouseDragLook = true;
       }
     };
 
     const onUp = (e: MouseEvent): void => {
-      if (e.button === 0) {
-        this.foamPointer = false;
-        this.mouseDragLook = false;
-      }
+      if (e.button === 0) this.foamPointer = false;
+      if (e.button === 2) this.mouseDragLook = false;
     };
 
     const onMove = (e: MouseEvent): void => {
@@ -251,6 +257,17 @@ export class InputManager {
 
     const onLockChange = (): void => {
       this.pointerLocked = document.pointerLockElement === this.canvas;
+      // Вышли из захвата (Escape) — отпускаем и ствол, иначе он останется
+      // «зажатым» с того клика, которым игрок входил в захват.
+      if (!this.pointerLocked) this.foamPointer = false;
+    };
+
+    // Захват могут запретить: iframe без разрешения, политика браузера,
+    // отказ пользователя. Тогда переходим на схему «ЛКМ — пена, ПКМ — обзор»,
+    // и игра остаётся полностью управляемой.
+    const onLockError = (): void => {
+      this.lockUnavailable = true;
+      this.pointerLocked = false;
     };
 
     const onContext = (e: Event): void => {
