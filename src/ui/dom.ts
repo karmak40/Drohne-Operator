@@ -60,6 +60,10 @@ export function onHold(node: HTMLElement, onDown: () => void, onUp: () => void):
 
 export function onTap(node: HTMLElement, handler: () => void): () => void {
   const fn = (e: Event): void => {
+    // Браузер подавляет click на отключённой кнопке, но pointerdown до неё
+    // доходит. Раз обработчик висит именно на pointerdown, disabled нужно
+    // проверять руками — иначе «неактивная» кнопка продолжает срабатывать.
+    if ((node as HTMLButtonElement).disabled || node.getAttribute('aria-disabled') === 'true') return;
     e.preventDefault();
     e.stopPropagation();
     handler();

@@ -81,6 +81,8 @@ export class Game {
   private damageTaken = 0;
   private adUsedThisFlight = false;
   private rewardPaid = 0;
+  /** Награду за вылет уже удваивали — второй раз реклама не сработает. */
+  private rewardDoubled = false;
   private lastResult?: MissionResultData;
 
   private readonly windVec = new THREE.Vector3();
@@ -283,6 +285,7 @@ export class Game {
     this.damageTaken = 0;
     this.adUsedThisFlight = false;
     this.rewardPaid = 0;
+    this.rewardDoubled = false;
     this.transitionTimer = 0;
 
     this.hud.setCrosshair(false);
@@ -330,8 +333,17 @@ export class Game {
     audio.chime(true);
   }
 
+  /**
+   * Удвоение награды за просмотр рекламы — ровно один раз за вылет.
+   *
+   * Полагаться на disabled у кнопки нельзя: экран итогов живёт долго, а
+   * повторное нажатие каждый раз удваивало уже удвоенное, и награда росла
+   * по степени двойки. Поэтому запрет живёт здесь, рядом с начислением.
+   */
   private doubleReward(): void {
-    if (!this.lastResult) return;
+    if (!this.lastResult || this.rewardDoubled) return;
+    this.rewardDoubled = true;
+
     save.countAd();
     save.addMoney(this.rewardPaid);
     this.rewardPaid *= 2;

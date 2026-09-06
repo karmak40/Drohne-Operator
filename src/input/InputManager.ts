@@ -190,7 +190,9 @@ export class InputManager {
 
       if (code === 'Escape') this.pauseEdge = true;
       if (!this.enabled) return;
-      if (code === 'KeyE' && this.allowWinch) this.winchEdge = true;
+      // Трос уехал с E на R: пена нужна куда чаще, и удобную клавишу под
+      // указательным пальцем логичнее отдать ей, а не одному нажатию за вылет.
+      if (code === 'KeyR' && this.allowWinch) this.winchEdge = true;
       if (code === 'KeyF' && this.allowThermal) this.thermalEdge = true;
       if (code === 'Space') e.preventDefault();
     };
@@ -376,7 +378,8 @@ export class InputManager {
     // Пена пересобирается каждый кадр из всех источников. Раньше клавиатура
     // только взводила флаг и никогда его не снимала — Ctrl отпущен, а бак
     // продолжал опустошаться до нуля.
-    this.foamHeld = this.allowFoam && (this.foamPointer || this.keys.has('ControlLeft'));
+    this.foamHeld =
+      this.allowFoam && (this.foamPointer || this.keys.has('KeyE') || this.keys.has('ControlLeft'));
 
     // Затухающая инерция свайпа — камера не останавливается как вкопанная.
     if (this.lookPointer === null) {
