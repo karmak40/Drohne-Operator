@@ -1,6 +1,7 @@
 import { bus } from '@/core/EventBus';
 import { t, type StringKey } from '@/i18n';
 import { audio } from '@/audio/AudioEngine';
+import { voice } from '@/audio/Voice';
 import type { MissionContext, MissionDef } from './MissionTypes';
 
 interface RadioLine {
@@ -16,6 +17,18 @@ function estimateDuration(text: string): number {
 }
 
 /**
+ * Реплики, которые звучат текстом и не озвучиваются.
+ *
+ * Это частые предупреждения: врезался в провода, приложился корпусом,
+ * перегрелся. За один вылет они могут сработать десяток раз подряд, и
+ * говорящий диспетчер начинает тараторить поверх самого себя.
+ */
+const UNVOICED = new Set<StringKey>(['radio.wires', 'radio.impact', 'radio.heat']);
+
+/** Кладовщик отвечает ниже диспетчера — так реплики различаются на слух. */
+const PITCH: Partial<Record<StringKey, number>> = { 'speaker.worker': 0.82 };
+
+/**
  * Проигрыватель сценария: ведёт фазы, очередь радиопереговоров и чекпойнты.
  * Сама миссия описывается декларативно (см. Mission01), поэтому уровни 2+
  * добавляются без правок этого файла.
@@ -25,6 +38,8 @@ export class MissionRunner {
   private queue: RadioLine[] = [];
   private currentDelay = 0;
   private currentHold = 0;
+  /** Запас времени, на который субтитр ждёт конца озвучки. */
+  private voiceGrace = 0;
   private speaking = false;
   private lastCheckpointIndex = 0;
 
@@ -151,6 +166,8 @@ export class MissionRunner {
   clearRadio(): void {
     this.queue = [];
     this.speaking = false;
+    this.voiceGrace = 0;
+    voice.cancel();
     this.currentDelay = 0;
     this.currentHold = 0;
     this.ctx.hud.hideRadio();
@@ -159,6 +176,9 @@ export class MissionRunner {
   private updateRadio(dt: number): void {
     if (this.speaking) {
       this.currentHold -= dt;
+      this.voiceGrace -= dt;
+      // Пока голос ещё договаривает, субтитр не снимаем.
+      if (this.currentHold <= 0 && this.voiceGrace > 0 && voice.isSpeaking) return;
       if (this.currentHold <= 0) {
         this.speaking = false;
         audio.radioClose();
@@ -189,6 +209,16 @@ export class MissionRunner {
     this.ctx.hud.showRadio(t(next.speaker), text, hold + 0.4);
     this.speaking = true;
     this.currentHold = hold;
+
+    if (!UNVOICED.has(next.line)) {
+      voice.speak(text, PITCH[next.speaker] ?? 1);
+      // Синтезатор редко попадает в оценку по числу слов, поэтому субтитру
+      // разрешено подождать конца реплики — но не бесконечно.
+      this.voiceGrace = hold + 6;
+    } else {
+      this.voiceGrace = 0;
+    }
+
     bus.emit('radio:line', { speaker: next.speaker, key: next.line, duration: hold });
   }
 }

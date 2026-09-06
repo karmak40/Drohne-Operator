@@ -454,6 +454,71 @@ export class AudioEngine {
     noise.stop(this.ctx!.currentTime + duration + 0.1);
   }
 
+  /**
+   * Процедурная «речь» рации: слоговые импульсы вместо слов.
+   *
+   * Работает откатом, когда у устройства нет синтезатора для текущего языка.
+   * Слоги нарезаются по самому тексту, поэтому длинная реплика бормочет
+   * дольше короткой, а на запятых и точках возникают паузы — на слух это
+   * читается как фраза, а не как ровная очередь писков.
+   *
+   * @returns функция отмены — оборвать бормотание, если реплику сняли
+   */
+  babble(text: string, pitch = 1): () => void {
+    if (!this.started || !this.ctx) return () => {};
+
+    const words = text.split(/\s+/).filter(Boolean);
+    const base = 196 * pitch;
+    const timers: number[] = [];
+    let cursor = 0;
+
+    for (const word of words) {
+      // Слог ≈ три буквы; знаки препинания в счёт не идут.
+      const letters = word.replace(/[^\p{L}]/gu, '').length;
+      const syllables = Math.max(1, Math.round(letters / 3));
+
+      for (let i = 0; i < syllables; i++) {
+        // Интонация: лёгкий подъём внутри слова плюс случайный разброс.
+        const step = syllables > 1 ? i / (syllables - 1) : 0.5;
+        const freq = base * (0.88 + step * 0.24) * (0.94 + Math.random() * 0.12);
+        timers.push(window.setTimeout(() => this.syllable(freq, 0.085), Math.round(cursor * 1000)));
+        cursor += 0.105 + Math.random() * 0.03;
+      }
+      cursor += /[,.;:!?—]$/.test(word) ? 0.26 : 0.07;
+    }
+
+    return () => {
+      for (const id of timers) clearTimeout(id);
+    };
+  }
+
+  /** Один слог: узкополосный тон с быстрой огибающей — «голос» в динамике рации. */
+  private syllable(frequency: number, duration: number): void {
+    if (!this.started || !this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(finite(frequency, 200), now);
+    // Спад к концу слога — иначе звучит как сигнал, а не как речь.
+    osc.frequency.linearRampToValueAtTime(finite(frequency * 0.93, 190), now + duration);
+
+    // Полоса рации: всё за её пределами режется, как в настоящем эфире.
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 1500;
+    band.Q.value = 0.9;
+
+    const gain = this.ctx.createGain();
+    osc.connect(band);
+    band.connect(gain);
+    gain.connect(this.compressor!);
+
+    this.envelope(gain, 0.055, 0.008, duration);
+    osc.start(now);
+    osc.stop(now + duration + 0.06);
+  }
+
   /** Сервопривод лебёдки. */
   winch(down: boolean): void {
     if (!this.started || !this.ctx) return;

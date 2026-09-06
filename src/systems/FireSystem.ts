@@ -113,8 +113,8 @@ export class FireSystem {
    */
   private createBar(spec: FireSpec): HealthBar {
     const root = new THREE.Group();
-    const width = 1.5 + spec.scale * 0.35;
-    const height = 0.17;
+    const width = 1.9 + spec.scale * 0.4;
+    const height = 0.26;
 
     const frameMat = new THREE.MeshBasicMaterial({
       color: 0x0b0e12,
@@ -145,7 +145,8 @@ export class FireSystem {
     root.add(fill);
 
     root.position.copy(spec.position);
-    root.position.y += 1.6 + spec.scale * 1.25;
+    // Над языками пламени: на уровне огня шкалу съедают частицы.
+    root.position.y += 2.3 + spec.scale * 1.5;
     // Атмосферный слой: в тепловом проходе интерфейсу делать нечего.
     root.traverse((o) => o.layers.set(LAYER.ATMOSPHERE));
     root.visible = false;

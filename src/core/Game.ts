@@ -25,6 +25,7 @@ import { RescueSystem } from '@/systems/RescueSystem';
 
 import { InputManager } from '@/input/InputManager';
 import { audio } from '@/audio/AudioEngine';
+import { voice } from '@/audio/Voice';
 
 import { Hud, type MarkerData } from '@/ui/Hud';
 import { Screens } from '@/ui/Screens';
@@ -245,6 +246,7 @@ export class Game {
       case 'paused':
         this.screens.show('pause');
         audio.suspend();
+        voice.cancel();
         haptics.stop();
         break;
       case 'result':
@@ -836,5 +838,6 @@ export class Game {
     disposeMaterials(this.materials);
     this.render.dispose();
     audio.dispose();
+    voice.cancel();
   }
 }

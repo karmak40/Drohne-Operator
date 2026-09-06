@@ -2,6 +2,7 @@ import './style.css';
 import { Game } from '@/core/Game';
 import { models } from '@/world/ModelRegistry';
 import { audio } from '@/audio/AudioEngine';
+import { voice } from '@/audio/Voice';
 
 const container = document.getElementById('app');
 if (!container) throw new Error('#app не найден');
@@ -23,7 +24,11 @@ async function boot(): Promise<void> {
   window.addEventListener('keydown', unlock);
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) audio.suspend();
+    if (document.hidden) {
+      audio.suspend();
+      // Синтезатор живёт вне AudioContext и сам по себе не замолкает.
+      voice.cancel();
+    }
   });
 }
 

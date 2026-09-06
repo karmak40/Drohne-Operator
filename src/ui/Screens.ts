@@ -1,8 +1,10 @@
 import { control, el, mount, onTap } from './dom';
 import { applyTranslations, getLocale, LOCALE_NAMES, setLocale, t, type LocaleCode } from '@/i18n';
+import { bus } from '@/core/EventBus';
 import { save } from '@/core/Save';
 import { haptics } from '@/core/Haptics';
 import { audio } from '@/audio/AudioEngine';
+import { voice } from '@/audio/Voice';
 import { formatTime } from '@/core/MathUtil';
 import { cfg } from '@/core/Config';
 import { computeStats, effectOf, MAX_LEVEL, nextCost, UPGRADE_BRANCHES } from '@/core/Upgrades';
@@ -51,6 +53,8 @@ export class Screens {
   private resultNote: HTMLElement;
   private resultUnlock: HTMLElement;
   private hapticsBtn?: HTMLButtonElement;
+  private voiceBtn?: HTMLButtonElement;
+  private voiceOn = true;
   private doubleBtn: HTMLButtonElement;
   private continueBtn: HTMLButtonElement;
   private retryBtn: HTMLButtonElement;
@@ -230,6 +234,18 @@ export class Screens {
       this.refreshHaptics();
     }
 
+    // Голос диспетчера отключаем отдельно от общего звука: синтезатор на
+    // чужом устройстве может звучать так, что его захочется выключить,
+    // не теряя при этом гул винтов и звук огня.
+    this.voiceBtn = control(mount(pauseActions, el('button', 'btn btn--ghost'))) as HTMLButtonElement;
+    onTap(this.voiceBtn, () => {
+      this.voiceOn = !this.voiceOn;
+      voice.setMuted(!this.voiceOn);
+      audio.click();
+      this.refreshVoice();
+    });
+    this.refreshVoice();
+
     mkPauseBtn('pause.debug', 'btn--ghost', () => this.cb.onToggleDebug());
     mkPauseBtn('pause.quit', 'btn--ghost', () => this.cb.onBackToMenu());
 
@@ -294,6 +310,17 @@ export class Screens {
 
     applyTranslations(parent);
     this.refreshMenu();
+
+    // Тумблеры и карточки ангара пишут текст вручную, а applyTranslations
+    // обновляет только узлы с data-i18n — без этой подписки они застревают
+    // на языке, который был активен в момент их последней перерисовки.
+    bus.on('i18n:changed', () => {
+      this.refreshVoice();
+      this.refreshHaptics();
+      this.refreshMenu();
+      if (!this.hangar.hidden) this.refreshHangar();
+      if (!this.briefing.hidden) this.refreshBriefing();
+    });
   }
 
   private buildLanguageSwitch(): HTMLElement {
@@ -311,6 +338,11 @@ export class Screens {
       this.langButtons.push(btn);
     }
     return box;
+  }
+
+  private refreshVoice(): void {
+    if (!this.voiceBtn) return;
+    this.voiceBtn.textContent = `${t('pause.voice')}: ${t(this.voiceOn ? 'common.on' : 'common.off')}`;
   }
 
   private refreshHaptics(): void {
